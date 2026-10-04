@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess Move Timer</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #111; color: #eee; font-family: system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; height: 100dvh; user-select: none; -webkit-user-select: none; }
+  .side {
+    flex: 1; min-height: 0; overflow: hidden; /* never push the page into scrolling */
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    border: 0; margin: 0; padding: 1rem; font: inherit; color: inherit; background: #3a3a3a;
+    cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  }
+  .side span { display: block; }
+  .side.active { background: #2e7d32; }
+  .side.low { background: #e65100; }
+  .side.lost { background: #b71c1c; }
+  .side.won { background: #1565c0; }
+  .name { font-size: 1.5rem; }
+  .time { font-size: min(24vw, 20vh); font-weight: bold; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .game { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+  .hint { font-size: 1.1rem; min-height: 1.4em; }
+  .bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; justify-content: center; padding: .5rem; }
+  .bar button, .bar input { font-size: 1.1rem; padding: .5rem 1rem; }
+  .bar input { width: 5em; }
+  /* Phone lying flat between the players: the top half faces the player across the table. */
+  @media (orientation: portrait) {
+    #black { transform: rotate(180deg); }
+    .time { font-size: min(24vw, 13dvh); } /* leaves room for the control bar on short phones */
+  }
+  /* Laptop or phone on its side: like a real chess clock, left and right. */
+  @media (orientation: landscape) {
+    body { flex-direction: row; }
+    .bar { flex-direction: column; width: 11rem; }
+    .bar label { text-align: center; }
+  }
+</style>
+</head>
+<body>
+  <button class="side" id="black">
+    <span class="name">Black</span>
+    <span class="time"></span>
+    <span class="game"></span>
+    <span class="hint"></span>
+  </button>
+  <div class="bar">
+    <label>Seconds per move <input id="seconds" type="number" min="1" step="1" value="30"></label>
+    <label>Whole game, minutes <input id="minutes" type="number" min="1" step="1" value="10"></label>
+    <button id="main"></button>
+    <button id="reset">Reset</button>
+  </div>
+  <button class="side" id="white">
+    <span class="name">White</span>
+    <span class="time"></span>
+    <span class="game"></span>
+    <span class="hint"></span>
+  </button>
+
+<script src="clock.js"></script>
+<script>
+  'use strict';
+  const { createMoveClock, formatMs } = MoveClock;
+  const sides = { white: document.getElementById('white'), black: document.getElementById('black') };
+  const secondsInput = document.getElementById('seconds');
+  const minutesInput = document.getElementById('minutes');
+  const mainButton = document.getElementById('main');
+  let clock, lastBeep;
+
+  // Whole number, at least 1. Bad input falls back to the default.
+  function readNumber(input, fallback) {
+    const n = Math.max(1, Math.round(Number(input.value)) || fallback);
+    input.value = n;
+    return n;
+  }
+
+  function newGame() {
+    clock = createMoveClock(readNumber(secondsInput, 30), readNumber(minutesInput, 10));
+    lastBeep = '';
+    render();
+  }
+
+  function render() {
+    const s = clock.state();
+    for (const player of ['white', 'black']) {
+      const side = sides[player];
+      const onTurn = s.status !== 'ready' && s.turn === player;
+      const ms = s[player].moveMs;
+      side.querySelector('.time').textContent = formatMs(ms);
+      side.querySelector('.game').textContent = 'Game time ' + formatMs(s[player].gameMs);
+      side.classList.toggle('active', onTurn && s.status === 'running');
+      side.classList.toggle('low', onTurn && s.status === 'running' && ms <= 5000);
+      side.classList.toggle('lost', onTurn && s.status === 'timeup');
+      side.classList.toggle('won', !onTurn && s.status === 'timeup');
+      side.querySelector('.hint').textContent =
+        s.status === 'ready' ? (player === 'white' ? 'You move first. Press Start.' : '') :
+        s.status === 'timeup' ? (onTurn ? 'Time is up. You lose.' : 'You win!') :
+        !onTurn ? '' :
+        s.status === 'paused' ? 'Paused' : 'Your move. Tap here when done.';
+    }
+    mainButton.textContent = { ready: 'Start', running: 'Pause', paused: 'Resume', timeup: 'Game over' }[s.status];
+    mainButton.disabled = s.status === 'timeup';
+    secondsInput.disabled = minutesInput.disabled = s.status !== 'ready';
+    beeps(s);
+    keepScreenOn(s.status === 'running');
+  }
+
+  // Short beep for each of the last 5 seconds, long beep when the time is up.
+  let audio;
+  function beeps(s) {
+    const sec = Math.ceil(s[s.turn].moveMs / 1000);
+    const key = s.status === 'timeup' ? 'timeup' : s.status === 'running' && sec <= 5 ? s.turn + sec : '';
+    if (!key || key === lastBeep) return;
+    lastBeep = key;
+    if (key === 'timeup') tone(440, 0.8); else tone(880, 0.08);
+  }
+  function tone(freq, seconds) {
+    if (!audio) return;
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
+    osc.frequency.value = freq;
+    gain.gain.value = 0.3;
+    osc.connect(gain).connect(audio.destination);
+    osc.start();
+    osc.stop(audio.currentTime + seconds);
+  }
+  // Browsers only allow sound after the user clicks something.
+  function unlockAudio() {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      audio.resume();
+    } catch (e) { /* no sound, the timer still works */ }
+  }
+
+  // Stop the phone screen from going dark during a game.
+  let wakeLock = null;
+  async function keepScreenOn(on) {
+    try {
+      if (on && !wakeLock && 'wakeLock' in navigator && document.visibilityState === 'visible') {
+        wakeLock = 'pending';
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      } else if (!on && wakeLock && wakeLock !== 'pending') {
+        await wakeLock.release();
+      }
+    } catch (e) {
+      wakeLock = null;
+    }
+  }
+
+  function tapSide(player) {
+    const before = clock.state().turn;
+    clock.done(player);
+    if (clock.state().turn !== before) lastBeep = ''; // new turn: its warning beeps start fresh
+    render();
+  }
+
+  for (const player of ['white', 'black']) {
+    // pointerdown reacts as soon as the finger touches, like a real clock button.
+    sides[player].addEventListener('pointerdown', () => tapSide(player));
+  }
+  mainButton.addEventListener('click', () => {
+    unlockAudio();
+    const status = clock.state().status;
+    if (status === 'ready') clock.start();
+    else if (status === 'running') clock.pause();
+    else if (status === 'paused') clock.resume();
+    render();
+  });
+  document.getElementById('reset').addEventListener('click', newGame);
+  secondsInput.addEventListener('change', newGame);
+  minutesInput.addEventListener('change', newGame);
+  // Space bar = tap the side of the player whose turn it is (handy on a laptop).
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' || e.target.tagName === 'INPUT') return;
+    e.preventDefault();
+    if (e.repeat) return; // holding the key down must not pass the turn again
+    tapSide(clock.state().turn);
+  });
+
+  newGame();
+  setInterval(render, 100);
+</script>
+</body>
+</html>
